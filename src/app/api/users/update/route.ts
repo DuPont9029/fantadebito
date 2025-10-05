@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { S3Client, HeadObjectCommand, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { ParquetReader, ParquetSchema, ParquetWriter } from "parquetjs-lite";
+import { hashPassword } from "@/lib/password";
 
 export const runtime = "nodejs";
 
@@ -85,7 +86,7 @@ export async function POST(req: Request) {
 
     const updated = { ...users[idx] };
     if (newUsername) updated.username = String(newUsername);
-    if (newPassword) updated.password = String(newPassword);
+    if (newPassword) updated.password = hashPassword(String(newPassword));
     users[idx] = updated;
 
     // Scrivi utenti aggiornati

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { S3Client, HeadObjectCommand, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-import { ParquetReader, ParquetSchema, ParquetWriter } from "parquetjs-lite";
+import { S3Client, HeadObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { ParquetReader } from "parquetjs-lite";
 import { verifyPassword } from "@/lib/password";
 
 export const runtime = "nodejs";
@@ -30,71 +30,55 @@ async function readAll(stream: any): Promise<Buffer> {
 
 type UserRow = { id: string; username: string; password: string; wins: number; losses: number; is_admin: boolean };
 
-const userSchema = new ParquetSchema({
-  id: { type: "UTF8" },
-  username: { type: "UTF8" },
-  password: { type: "UTF8" },
-  wins: { type: "INT32" },
-  losses: { type: "INT32" },
-  is_admin: { type: "BOOLEAN" },
-});
-
 export async function POST(req: Request) {
   try {
     const { username, password } = await req.json().catch(() => ({ username: "", password: "" }));
+    if (!username || !password) {
+      return NextResponse.json({ status: "error", message: "username e password richiesti" }, { status: 400 });
+    }
 
     const bucket = getEnv("S3_BUCKET")!;
     const prefix = getEnv("S3_PREFIX", true) || "";
     const key = `${prefix}users.parquet`;
     const s3 = getS3Client();
 
-    // Leggi utenti
     await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
     const obj = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
     const body = await readAll(obj.Body as any);
     const reader = await ParquetReader.openBuffer(body);
     const cursor = reader.getCursor();
-    const users: UserRow[] = [];
+    let matched: UserRow | null = null;
     for (;;) {
       const rec = await cursor.next();
       if (!rec) break;
-      users.push({
+      const user: UserRow = {
         id: String(rec.id),
         username: String(rec.username),
         password: String(rec.password),
         wins: Number(rec.wins ?? 0),
         losses: Number(rec.losses ?? 0),
         is_admin: Boolean(rec.is_admin ?? false),
-      });
+      };
+      if (user.username === String(username) && verifyPassword(String(password), String(user.password))) {
+        matched = user;
+        break;
+      }
     }
     await reader.close();
 
-    // Autenticazione/Autorizzazione admin
-    const acting = users.find((u) => String(u.username) === String(username) && verifyPassword(String(password), String(u.password)));
-    if (!acting || !acting.is_admin) {
-      return NextResponse.json({ status: "error", message: "Solo admin può resettare counters" }, { status: 403 });
+    if (!matched) {
+      return NextResponse.json({ status: "error", message: "Credenziali non valide" }, { status: 401 });
     }
 
-    // Azzeramento wins/losses per tutti
-    const resetUsers: UserRow[] = users.map((u) => ({ ...u, wins: 0, losses: 0 }));
-
-    // Scrivi utenti aggiornati
-    const outChunks: Buffer[] = [];
-    const { Writable } = await import("node:stream");
-    const sink = new Writable({
-      write(chunk, _enc, cb) {
-        outChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-        cb();
-      },
-    });
-    const writer = await ParquetWriter.openStream(userSchema, sink as any);
-    for (const r of resetUsers) await writer.appendRow(r);
-    await writer.close();
-    const newBody = Buffer.concat(outChunks);
-    await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: newBody, ContentType: "application/octet-stream" }));
-
-    return NextResponse.json({ status: "reset", total: resetUsers.length }, { status: 200 });
+    return NextResponse.json({
+      status: "ok",
+      user: { id: matched.id, username: matched.username, is_admin: matched.is_admin },
+    }, { status: 200 });
   } catch (error: any) {
-    return NextResponse.json({ status: "error", message: error?.message || String(error) }, { status: 500 });
+    const msg = String(error?.message || error);
+    if (msg.includes("Not Found")) {
+      return NextResponse.json({ status: "error", message: "users.parquet non trovato. Esegui /api/init" }, { status: 404 });
+    }
+    return NextResponse.json({ status: "error", message: msg }, { status: 500 });
   }
 }

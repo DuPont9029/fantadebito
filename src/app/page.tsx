@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { authenticate } from "../lib/duckdb";
+// Autenticazione ora è server-side: usiamo /api/login
 
 type Session = { userId: string; username: string; is_admin?: boolean } | null;
 type Profile = { wins: number; losses: number } | null;
@@ -97,11 +97,17 @@ export default function Home() {
     setError("");
     try {
       if (!isRegister) {
-        const user = await authenticate(username, password);
-        if (!user) {
-          setError("Credenziali non valide");
+        const res = await fetch("/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setError(data?.message || "Credenziali non valide");
           return;
         }
+        const user = data.user as { id: string; username: string; is_admin?: boolean };
         save({ userId: user.id, username: user.username, is_admin: Boolean(user.is_admin) });
         await refreshProfile(user.id);
       } else {

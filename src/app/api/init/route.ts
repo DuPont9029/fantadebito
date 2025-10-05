@@ -3,6 +3,7 @@ import { S3Client, HeadObjectCommand, PutObjectCommand } from "@aws-sdk/client-s
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { ParquetSchema, ParquetWriter } from "parquetjs-lite";
+import { hashPassword } from "@/lib/password";
 import { Writable } from "node:stream";
 
 export const runtime = "nodejs";
@@ -67,9 +68,11 @@ export async function POST() {
     });
 
     const writer = await ParquetWriter.openStream(schema, out);
-    // Utenti di esempio — demo admin, mn utente normale
-    await writer.appendRow({ id: "1", username: "demo", password: "demo", wins: 0, losses: 0, is_admin: true });
-    await writer.appendRow({ id: "2", username: "mn", password: "1234", wins: 0, losses: 0, is_admin: false });
+    // Utenti di esempio — demo admin, mn utente normale (passwords hashate)
+    const demoHash = hashPassword("demo");
+    const mnHash = hashPassword("1234");
+    await writer.appendRow({ id: "1", username: "demo", password: demoHash, wins: 0, losses: 0, is_admin: true });
+    await writer.appendRow({ id: "2", username: "mn", password: mnHash, wins: 0, losses: 0, is_admin: false });
     await writer.close();
     const body = Buffer.concat(chunks);
 

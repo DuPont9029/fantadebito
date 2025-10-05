@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { S3Client, HeadObjectCommand, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { ParquetSchema, ParquetWriter } from "parquetjs-lite";
 import { ParquetReader } from "parquetjs-lite";
+import { hashPassword } from "@/lib/password";
 
 export const runtime = "nodejs";
 
@@ -74,9 +75,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ status: "error", message: "Username già esistente" }, { status: 409 });
     }
 
-    // Aggiungi nuovo utente
+    // Aggiungi nuovo utente (hashing password)
     const id = Math.random().toString(36).slice(2);
-    rows.push({ id, username, password, wins: 0, losses: 0, is_admin: false });
+    const passwordHash = hashPassword(String(password));
+    rows.push({ id, username, password: passwordHash, wins: 0, losses: 0, is_admin: false });
 
     // Scrivi nuovo parquet con tutti gli utenti
     const outChunks: Buffer[] = [];

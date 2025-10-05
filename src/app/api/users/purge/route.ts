@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { S3Client, HeadObjectCommand, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-import { ParquetSchema, ParquetWriter } from "parquetjs-lite";
-import { ParquetReader } from "parquetjs-lite";
+import { ParquetReader, ParquetSchema, ParquetWriter } from "parquetjs-lite";
 import { verifyPassword } from "@/lib/password";
 
 export const runtime = "nodejs";
@@ -29,8 +28,7 @@ async function readAll(stream: any): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-type UserRowIn = { id?: any; username?: any; password?: any; wins?: any; losses?: any; is_admin?: any };
-type UserRowOut = { id: string; username: string; password: string; wins: number; losses: number; is_admin: boolean };
+type UserRow = { id: string; username: string; password: string; wins: number; losses: number; is_admin: boolean };
 
 const userSchema = new ParquetSchema({
   id: { type: "UTF8" },
@@ -43,56 +41,48 @@ const userSchema = new ParquetSchema({
 
 export async function POST(req: Request) {
   try {
-    const { admin_username, admin_password, make_admin_username, make_admin_userId } = await req.json().catch(() => ({ admin_username: "", admin_password: "", make_admin_username: "", make_admin_userId: "" }));
-
+    const { username, password } = await req.json().catch(() => ({ username: "", password: "" }));
     const bucket = getEnv("S3_BUCKET")!;
     const prefix = getEnv("S3_PREFIX", true) || "";
     const key = `${prefix}users.parquet`;
     const s3 = getS3Client();
 
-    // Deve esistere già; altrimenti suggerire /api/init
-    try {
-      await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
-    } catch (e) {
-      return NextResponse.json({ status: "error", message: "users.parquet non trovato. Esegui /api/init" }, { status: 404 });
-    }
-
+    // Leggi utenti
+    await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
     const obj = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
     const body = await readAll(obj.Body as any);
     const reader = await ParquetReader.openBuffer(body);
     const cursor = reader.getCursor();
-
-    const rowsIn: UserRowIn[] = [];
+    const users: UserRow[] = [];
     for (;;) {
       const rec = await cursor.next();
       if (!rec) break;
-      rowsIn.push(rec as UserRowIn);
+      users.push({
+        id: String(rec.id),
+        username: String(rec.username),
+        password: String(rec.password),
+        wins: Number(rec.wins ?? 0),
+        losses: Number(rec.losses ?? 0),
+        is_admin: Boolean(rec.is_admin ?? false),
+      });
     }
     await reader.close();
 
-    // Verifica admin
-    const acting = rowsIn.find((rec: any) => String(rec.username) === String(admin_username));
-    const isAdmin = acting && Boolean(acting.is_admin) && verifyPassword(String(admin_password), String((acting as any).password ?? ""));
-    if (!isAdmin) {
-      return NextResponse.json({ status: "error", message: "Solo admin può promuovere utenti" }, { status: 403 });
+    // Autorizzazione admin
+    const acting = users.find((u) => String(u.username) === String(username) && verifyPassword(String(password), String(u.password)));
+    if (!acting || !acting.is_admin) {
+      return NextResponse.json({ status: "error", message: "Solo admin può purgare utenti" }, { status: 403 });
     }
 
-    const promoteUsername = String(make_admin_username || "").trim();
-    const promoteUserId = String(make_admin_userId || "").trim();
-    const outRows: UserRowOut[] = rowsIn.map((r) => {
-      const id = String(r.id ?? "");
-      const username = String(r.username ?? "");
-      const password = String(r.password ?? "");
-      const wins = Number(r.wins ?? 0);
-      const losses = Number(r.losses ?? 0);
-      let is_admin = Boolean(r.is_admin ?? false);
-      if (!is_admin) {
-        if (promoteUsername && username === promoteUsername) is_admin = true;
-        if (promoteUserId && id === promoteUserId) is_admin = true;
-      }
-      return { id, username, password, wins, losses, is_admin };
-    });
+    // Purgare: rimuovi tutti gli utenti escluso eventualmente l'admin che esegue
+    const keepAdminId = acting.id;
+    const remaining: UserRow[] = [];
 
+    // Se vuoi davvero eliminare anche l'admin, passare flag explicit; per ora manteniamo admin
+    // In alternativa, per eliminare TUTTI, usare array vuoto.
+    // Richiesta: eliminare tutti gli account utente -> svuotiamo completamente.
+
+    // Scrivi un parquet vuoto (solo schema, nessuna riga)
     const outChunks: Buffer[] = [];
     const { Writable } = await import("node:stream");
     const sink = new Writable({
@@ -102,20 +92,12 @@ export async function POST(req: Request) {
       },
     });
     const writer = await ParquetWriter.openStream(userSchema, sink as any);
-    for (const r of outRows) await writer.appendRow(r);
+    for (const r of remaining) await writer.appendRow(r);
     await writer.close();
     const newBody = Buffer.concat(outChunks);
     await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: newBody, ContentType: "application/octet-stream" }));
 
-    const promoted = outRows.find((r) => r.is_admin && (r.username === promoteUsername || r.id === promoteUserId));
-    return NextResponse.json(
-      {
-        status: "migrated",
-        total: outRows.length,
-        promoted: promoted ? { id: promoted.id, username: promoted.username } : null,
-      },
-      { status: 200 }
-    );
+    return NextResponse.json({ status: "purged", total: remaining.length }, { status: 200 });
   } catch (error: any) {
     return NextResponse.json({ status: "error", message: error?.message || String(error) }, { status: 500 });
   }

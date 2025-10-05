@@ -68,7 +68,7 @@ export async function queryFirst(sql: string): Promise<RowObject | null> {
 export type User = {
   id: string;
   username: string;
-  password: string; // For demo simplicity; in production use hashes.
+  password: string; // Può essere legacy plaintext o hash PBKDF2
   wins?: number;
   losses?: number;
   is_admin?: boolean;
@@ -76,6 +76,53 @@ export type User = {
 
 // Simple auth: reads users from remote Parquet via HTTP.
 // URL is provided by env: NEXT_PUBLIC_USERS_PARQUET_URL
+async function hexToBytes(hex: string): Promise<Uint8Array> {
+  const cleaned = hex.trim();
+  const bytes = new Uint8Array(cleaned.length / 2);
+  for (let i = 0; i < cleaned.length; i += 2) {
+    bytes[i / 2] = parseInt(cleaned.substr(i, 2), 16);
+  }
+  return bytes;
+}
+
+function bytesToHex(buf: ArrayBuffer): string {
+  const v = new Uint8Array(buf);
+  let out = '';
+  for (let i = 0; i < v.length; i++) {
+    out += v[i].toString(16).padStart(2, '0');
+  }
+  return out;
+}
+
+async function verifyPasswordBrowser(plain: string, stored: string): Promise<boolean> {
+  if (!stored) return false;
+  // supporto legacy: password in chiaro
+  if (!stored.startsWith('pbkdf2$')) return stored === plain;
+  const parts = stored.split('$');
+  const iterations = Number(parts[1] || 310000);
+  const saltHex = parts[2];
+  const expectedHex = parts[3];
+  if (!iterations || !saltHex || !expectedHex) return false;
+  const te = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    te.encode(plain),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveBits']
+  );
+  // Importante: lato server l'hash usa la stringa hex del salt come bytes (UTF-8),
+  // quindi qui dobbiamo usare la stessa rappresentazione per ottenere lo stesso derivato.
+  const salt = te.encode(saltHex);
+  const derived = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', hash: 'SHA-256', salt, iterations },
+    keyMaterial,
+    256
+  );
+  const gotHex = bytesToHex(derived);
+  return gotHex === expectedHex;
+}
+
 export async function authenticate(username: string, password: string): Promise<User | null> {
   let usersParquetUrl: string | undefined = process.env.NEXT_PUBLIC_USERS_PARQUET_URL;
   // Se l'URL non è presente in env, prova a inizializzare lato server e ottenere l'URL pubblico
@@ -100,9 +147,13 @@ export async function authenticate(username: string, password: string): Promise<
   }
   // Create a temporary view over the remote Parquet; DuckDB supports http.
   const safeUrl = usersParquetUrl.replace(/'/g, "''");
-  const sql = `SELECT * FROM read_parquet('${safeUrl}') WHERE username = '${username.replace(/'/g, "''")}' AND password = '${password.replace(/'/g, "''")}';`;
+  // Recupera l'utente per username e verifica client-side con PBKDF2
+  const sql = `SELECT * FROM read_parquet('${safeUrl}') WHERE username = '${username.replace(/'/g, "''")}';`;
   const row = await queryFirst(sql);
   if (!row) return null;
+  const stored = String(row.password ?? '');
+  const ok = await verifyPasswordBrowser(password, stored);
+  if (!ok) return null;
   return {
     id: String(row.id ?? ''),
     username: String(row.username ?? ''),
