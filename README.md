@@ -1,36 +1,30 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+Fantadebito — scommesse scolastiche con DuckDB WASM e Parquet remoto
 
-## Getting Started
+Obiettivo
+- UI minimale per login e scommesse su M.N. (stile fantamorto).
+- Autenticazione letta da `users.parquet` ospitato su Cubbit S3 (link HTTP/HTTPS).
+- Nessun backend: tutto gira in browser usando DuckDB WASM + httpfs.
 
-First, run the development server:
+Prerequisiti
+- Node 18+ e pnpm installati.
+- Un URL pubblico al file `users.parquet` (schema minimo: `id`, `username`, `password`) configurato in env.
+  - Crea `.env.local` e imposta: `NEXT_PUBLIC_USERS_PARQUET_URL=https://<cubbit-bucket>/<path>/users.parquet`
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+Avvio
+1. Installa dipendenze: `pnpm install`
+2. Configura `.env.local` come sopra
+3. Avvia dev server: `pnpm dev`
+4. Apri `http://localhost:3000` e inserisci le tue credenziali
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Tecnico
+- DuckDB WASM inizializzato via `selectBundle` con worker e modulo serviti da jsDelivr.
+- `httpfs` viene installato e caricato per leggere Parquet su HTTP/S, con fallback ai full reads.
+- Scommesse salvate in `localStorage` per semplicità.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Note e assunzioni
+- Le password sono in chiaro nel parquet solo per demo. In produzione usare hash.
+- Il bucket deve supportare CORS per richieste dal browser al file Parquet.
+- Se il server non supporta range requests, è abilitato il fallback ai full HTTP reads.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Licenza
+- Prototipo didattico. Usa a tuo rischio.
